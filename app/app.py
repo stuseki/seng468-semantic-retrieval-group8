@@ -165,12 +165,16 @@ def create_user():
     if username == '' or password == '':
         return jsonify(error="Username or password is empty"), 400
 
-    user = User(
-        username=username,
-        password=generate_password_hash(password)
-    )
+    existing_user = db.session.query(User).filter_by(username=username).first()
+    if existing_user:
+        return jsonify(error="Username already exists"), 409
 
     try:
+        user = User(
+            username=username,
+            password=generate_password_hash(password)
+        )
+
         db.session.add(user)
         db.session.commit()
 
@@ -179,9 +183,9 @@ def create_user():
             user_id=user.user_id
         ), 200
 
-    except Exception:
+    except Exception as e:
         db.session.rollback()
-        return jsonify(error="Username already exists"), 409
+        return jsonify(error=str(e)), 500
 
 
 @app.route('/auth/login', methods=['POST'])
