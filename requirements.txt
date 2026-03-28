@@ -1,9 +1,8 @@
 Flask==2.3.0
 Flask-SQLAlchemy==3.0.5
 psycopg2-binary==2.9.6
-pypdf==6.9.2
-sentence-transformers==5.1.2
-scikit-learn==1.8.0
-numpy==2.3.3
-torch==2.8.0
+pypdf
+scikit-learn
+numpy
 cryptography==46.0.5
+Werkzeug
