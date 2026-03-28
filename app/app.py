@@ -1,12 +1,13 @@
 '''
 Semantic Retrieval System API
 '''
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 import os
 from datetime import datetime, timedelta
 import secrets
+import crypt
 
 app = Flask(__name__)
 
@@ -40,6 +41,7 @@ class Session(db.Model):
     
     user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'))
 
+
 # API Endpoints
 
 @app.route('/auth/signup', methods=['POST'])
@@ -49,8 +51,12 @@ def create_user():
     
     user = User(
         username = data['username'],
-        password = data['password']
+        password = crypt.encrypt(data['password'])
     )
+    if (user.username == '' or user.password == ''):
+        return jsonify(
+            error="Username or password is empty",
+        ), 400
     
     try:
         db.session.add(user)
@@ -78,7 +84,7 @@ def login_user():
     try:
         #check entered user and password against database, create session if match
         get_user = db.session.query(User).filter_by(username=data['username']).first()
-        if (get_user.password == data['password']):
+        if (crypt.decrypt(get_user.password) == data['password']):
         
             session_token = secrets.token_urlsafe(16) #generate unique session token
         
@@ -102,6 +108,7 @@ def login_user():
         return jsonify(
             error="Invalid credentials"
         ), 401
+    
     
 @app.route('/documents', methods=['POST'])
 def upload_document():
@@ -147,13 +154,14 @@ def upload_document():
         status="processing"
     ), 202
     
+    
 # Database initialization
 
 with app.app_context():
     db.create_all()
     
 if __name__ == '__main__':
-    
+    crypt.generate_key() #only run once
     app.run(host='0.0.0.0', port=8080, debug=True)
     
     
