@@ -4,9 +4,19 @@ Semantic Retrieval System API
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
+
+from datetime import datetime, timedelta, timezone
+from pypdf import PdfReader
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+
+import json
 import os
-from datetime import datetime, timedelta
+import re
 import secrets
+import uuid
+import numpy as np
 import crypt
 
 app = Flask(__name__)
@@ -22,7 +32,97 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-tomorrow = datetime.now() + timedelta(days=1)
+tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
+MODEL_NAME = os.getenv('EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
+_embedding_model = None
+
+def get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        _embedding_model = SentenceTransformer(MODEL_NAME)
+    return _embedding_model
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def split_text_into_chunks(text: str, max_chars: int = 900):
+    text = text.replace('\r', '\n')
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'[ \t]+', ' ', text).strip()
+
+    if not text:
+        return []
+
+    rough_paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+    chunks = []
+
+    for paragraph in rough_paragraphs:
+        if len(paragraph) <= max_chars:
+            chunks.append(paragraph)
+            continue
+
+        sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+        current = ''
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+
+            if not current:
+                current = sentence
+            elif len(current) + 1 + len(sentence) <= max_chars:
+                current += ' ' + sentence
+            else:
+                chunks.append(current)
+                current = sentence
+
+        if current:
+            chunks.append(current)
+
+    return chunks
+
+def extract_pdf_text_and_page_count(filepath: str):
+    reader = PdfReader(filepath)
+    pages = reader.pages
+    page_count = len(pages)
+
+    all_text = []
+    for page in pages:
+        page_text = page.extract_text() or ''
+        if page_text.strip():
+            all_text.append(page_text)
+
+    return '\n\n'.join(all_text), page_count
+
+
+def embed_texts(texts):
+    model = get_embedding_model()
+    embeddings = model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+    return embeddings
+
+def get_session_user():
+    auth_header = request.headers.get('Authorization')
+
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return None, (jsonify(error="Missing or invalid token"), 401)
+
+    session_token = auth_header.split(' ', 1)[1]
+    session = db.session.query(Session).filter_by(session_id=session_token).first()
+
+    if not session:
+        return None, (jsonify(error="Invalid credentials"), 401)
+
+    if session.session_exp and session.session_exp < now_utc():
+        return None, (jsonify(error="Session expired"), 401)
+
+    user = db.session.query(User).filter_by(user_id=session.user_id).first()
+    if not user:
+        return None, (jsonify(error="Invalid credentials"), 401)
+
+    return user, None
 
 # Database Models
 
@@ -40,6 +140,26 @@ class Session(db.Model):
     session_exp = db.Column(db.DateTime, default=tomorrow)
     
     user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'))
+
+class Document(db.Model):
+    __tablename__ = 'documents'
+
+    document_id = db.Column(db.String(36), primary_key=True)
+    filename = db.Column(db.String(255), nullable=False)
+    upload_date = db.Column(db.DateTime(timezone=True), default=now_utc, nullable=False)
+    status = db.Column(db.String(32), nullable=False, default='processing')
+    page_count = db.Column(db.Integer, nullable=True)
+    file_path = db.Column(db.String(512), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+
+
+class ParagraphChunk(db.Model):
+    __tablename__ = 'paragraph_chunks'
+
+    chunk_id = db.Column(db.Integer, primary_key=True)
+    text = db.Column(db.Text, nullable=False)
+    embedding = db.Column(db.Text, nullable=False)
+    document_id = db.Column(db.String(36), db.ForeignKey('documents.document_id'), nullable=False)
 
 
 # API Endpoints
@@ -112,47 +232,181 @@ def login_user():
     
 @app.route('/documents', methods=['POST'])
 def upload_document():
-    auth_header = request.headers.get('Authorization')
-
-    if not auth_header or not auth_header.startswith('Bearer '):
-        return jsonify(
-            error="Missing or invalid token"
-        ), 401
-
-    session_token = auth_header.split(' ')[1]
-    session = db.session.query(Session).filter_by(session_id=session_token).first()
-
-    if not session:
-        return jsonify(
-            error="Invalid credentials"
-        ), 401
+    user, error_response = get_session_user()
+    if error_response:
+        return error_response
 
     if 'file' not in request.files:
-        return jsonify(
-            error="No file uploaded"
-        ), 400
+        return jsonify(error="No file uploaded"), 400
 
     file = request.files['file']
 
     if file.filename == '':
-        return jsonify(
-            error="Empty filename"
-        ), 400
+        return jsonify(error="Empty filename"), 400
 
     if not file.filename.lower().endswith('.pdf'):
-        return jsonify(
-            error="Only PDF files are allowed"
-        ), 400
+        return jsonify(error="Only PDF files are allowed"), 400
 
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    document_id = str(uuid.uuid4())
+    original_filename = secure_filename(file.filename)
+    stored_filename = f"{document_id}_{original_filename}"
+    filepath = os.path.join(UPLOAD_FOLDER, stored_filename)
+
     file.save(filepath)
+
+    document = Document(
+        document_id=document_id,
+        filename=original_filename,
+        status='processing',
+        page_count=None,
+        file_path=filepath,
+        user_id=user.user_id
+    )
+
+    db.session.add(document)
+    db.session.commit()
+
+    try:
+        extracted_text, page_count = extract_pdf_text_and_page_count(filepath)
+        chunks = split_text_into_chunks(extracted_text)
+
+        if chunks:
+            embeddings = embed_texts(chunks)
+
+            for chunk_text, vector in zip(chunks, embeddings):
+                db.session.add(
+                    ParagraphChunk(
+                        text=chunk_text,
+                        embedding=json.dumps(vector.tolist()),
+                        document_id=document_id
+                    )
+                )
+
+        document.status = 'ready'
+        document.page_count = page_count
+        db.session.commit()
+
+    except Exception as exc:
+        document.status = 'failed'
+        db.session.commit()
+        return jsonify(
+            error="PDF processing failed",
+            details=str(exc),
+            document_id=document_id
+        ), 500
 
     return jsonify(
         message="PDF uploaded, processing started",
-        document_id=filename,
-        status="processing"
+        document_id=document_id,
+        status=document.status
     ), 202
+
+
+@app.route('/documents', methods=['GET'])
+def list_documents():
+    user, error_response = get_session_user()
+    if error_response:
+        return error_response
+
+    documents = (
+        db.session.query(Document)
+        .filter_by(user_id=user.user_id)
+        .order_by(Document.upload_date.desc())
+        .all()
+    )
+
+    response = []
+    for document in documents:
+        response.append({
+            "document_id": document.document_id,
+            "filename": document.filename,
+            "upload_date": document.upload_date.isoformat().replace('+00:00', 'Z'),
+            "status": document.status,
+            "page_count": document.page_count
+        })
+
+    return jsonify(response), 200
+
+@app.route('/documents/<document_id>', methods=['DELETE'])
+def delete_document(document_id):
+    user, error_response = get_session_user()
+    if error_response:
+        return error_response
+
+    document = (
+        db.session.query(Document)
+        .filter_by(document_id=document_id, user_id=user.user_id)
+        .first()
+    )
+
+    if not document:
+        return jsonify(error="Document not found or not owned by user"), 404
+
+    db.session.query(ParagraphChunk).filter_by(document_id=document_id).delete()
+
+    if document.file_path and os.path.exists(document.file_path):
+        os.remove(document.file_path)
+
+    db.session.delete(document)
+    db.session.commit()
+
+    return jsonify(
+        message="Document and all associated data deleted",
+        document_id=document_id
+    ), 200
+    
+@app.route('/search', methods=['GET'])
+def search_documents():
+    user, error_response = get_session_user()
+    if error_response:
+        return error_response
+
+    query = (request.args.get('q') or '').strip()
+    if not query:
+        return jsonify(error="Missing search query"), 400
+
+    user_documents = db.session.query(Document).filter_by(user_id=user.user_id, status='ready').all()
+    if not user_documents:
+        return jsonify([]), 200
+
+    document_map = {doc.document_id: doc for doc in user_documents}
+    document_ids = list(document_map.keys())
+
+    chunks = (
+        db.session.query(ParagraphChunk)
+        .filter(ParagraphChunk.document_id.in_(document_ids))
+        .all()
+    )
+
+    if not chunks:
+        return jsonify([]), 200
+
+    chunk_texts = [chunk.text for chunk in chunks]
+    chunk_doc_ids = [chunk.document_id for chunk in chunks]
+    chunk_embeddings = np.array([json.loads(chunk.embedding) for chunk in chunks])
+
+    query_embedding = embed_texts([query])[0].reshape(1, -1)
+    scores = cosine_similarity(query_embedding, chunk_embeddings)[0]
+
+    ranked = sorted(
+        zip(chunk_texts, chunk_doc_ids, scores),
+        key=lambda item: item[2],
+        reverse=True
+    )[:5]
+
+    results = []
+    for text, document_id, score in ranked:
+        document = document_map[document_id]
+        clipped_score = max(0.0, min(1.0, float(score)))
+
+        results.append({
+            "text": text,
+            "score": round(clipped_score, 3),
+            "document_id": document_id,
+            "filename": document.filename
+        })
+
+    return jsonify(results), 200
     
     
 # Database initialization
