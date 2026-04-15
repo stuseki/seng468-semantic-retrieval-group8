@@ -1,0 +1,11 @@
+body {
+  background-color: rgb(224, 229, 175);
+  display: grid;
+  place-items: center;
+  min-height: 100vh;   
+  margin: 0;  
+}
+
+p { 
+  display: inline; 
+}

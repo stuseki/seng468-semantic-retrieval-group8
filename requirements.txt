@@ -6,3 +6,4 @@ scikit-learn
 numpy
 cryptography==46.0.5
 Werkzeug
+flask-cors

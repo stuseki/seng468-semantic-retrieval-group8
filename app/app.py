@@ -1,7 +1,8 @@
 '''
 Semantic Retrieval System API
 '''
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -17,6 +18,8 @@ import secrets
 import uuid
 
 app = Flask(__name__)
+CORS(app)
+app.secret_key="secret key"
 
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -155,6 +158,18 @@ def extract_pdf_text_and_page_count(filepath: str):
 
 # API Endpoints
 
+@app.route('/')
+def signup():
+    return render_template("signup.html")
+
+@app.route('/login')
+def login():
+    return render_template("login.html")
+
+@app.route('/home')
+def home():
+    return render_template("home.html")
+
 @app.route('/auth/signup', methods=['POST'])
 def create_user():
     data = request.get_json() or {}
@@ -211,6 +226,7 @@ def login_user():
     db.session.add(session)
     db.session.commit()
 
+    
     return jsonify(
         token=session_token,
         user_id=get_user.user_id

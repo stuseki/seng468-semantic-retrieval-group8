@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Semantic Retrieval System</title>
+        <script src="{{ url_for('static', filename='script.js') }}"></script>
+        <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    </head>
+    <body>
+        <!--document upload-->
+        <form onsubmit="validation(event)">
+            <label for="doc">Upload PDF:</label>
+            <input type="file" accept=".pdf" name="doc" id="doc">
+            <button type="submit" onclick="upload()">Submit</button>
+        </form>
+        <!--document view-->
+        <form onsubmit="validation(event)">
+            <p>View all documents:</p>
+            <button type="submit" onclick="view()">View</button>
+        </form>
+        <!--document delete-->
+        <form onsubmit="validation(event)">
+            <label for="doc_id">Delete document by document ID:</label>
+            <input type="text" name="doc_id" id="doc_id">
+            <button type="submit" onclick="remove()">Submit</button>
+        </form>
+        <!--document search-->
+        <form onsubmit="validation(event)">
+            <label for="term">Search documents by term:</label>
+            <input type="text" name="term" id="term">
+            <button type="submit" onclick="search()">Submit</button>
+        </form>
+    </body>
+</html>

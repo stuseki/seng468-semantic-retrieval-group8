@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Semantic Retrieval System</title>
+        <script src="{{ url_for('static', filename='script.js') }}"></script>
+        <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    </head>
+    <body>
+        <p>Log In:</p>
+        <!--sign in form-->
+        <form onsubmit="validation(event)">
+            <label for="log_username">Username:</label>
+            <input type="text" name="username" id="log_username">
+            <br>
+            <label for="log_password">Password:</label>
+            <input type="text" name="password" id="log_password">
+            <br>
+            <button type="submit" onclick="login()">Submit</button>
+        </form>
+
+        <p>Not registered? Sign Up!</p>
+        <button onclick="window.location='/'">Sign Up</button>
+    </body>
+</html>
